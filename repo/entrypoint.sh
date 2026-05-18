@@ -15,7 +15,6 @@ if ! gpg --list-keys | grep -q "Repo Signing Key"; then
 Key-Type: RSA
 Key-Length: 2048
 Name-Real: Repo Signing Key
-Name-Email: repo@local
 Expire-Date: 0
 %no-protection
 %commit

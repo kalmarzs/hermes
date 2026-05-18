@@ -193,7 +193,7 @@ Section: admin
 Priority: optional
 Architecture: all
 Depends: docker.io
-Maintainer: Bond <bond@hermes>
+Maintainer: kalmarzs
 Description: Hermes private Debian repository and package build helper
 EOF
 
