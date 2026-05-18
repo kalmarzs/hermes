@@ -1,0 +1,15 @@
+version: "3.8"
+
+services:
+  repo:
+    build: ./repo
+    container_name: hermes
+    image: hermes
+    ports:
+      - "8080:80"
+    volumes:
+      - ./repo-data:/repo
+      - ./gnupg:/gnupg
+      - ./packages:/packages
+
+

@@ -1,0 +1,87 @@
+#!/bin/bash
+set -e
+
+IMAGE="hermes-builder"
+PROJECT_DIR="/data/hermes"
+
+run_builder() {
+  docker run --rm \
+    -v "$PROJECT_DIR/packages:/packages" \
+    -v "$PROJECT_DIR/repo-data:/repo" \
+    -v "$PROJECT_DIR/gnupg:/gnupg" \
+    -v "$PROJECT_DIR/builder/scripts:/scripts" \
+    -v "$PROJECT_DIR:/hermes-source" \
+    "$IMAGE" \
+    bash -c "$1"
+}
+
+usage() {
+  echo "Usage:"
+  echo "  hermes build <package>"
+  echo "  hermes publish <package>"
+  echo "  hermes <package>              # build + publish"
+  echo "  hermes list"
+}
+
+build_package() {
+  PACKAGE="$1"
+  SCRIPT="$PROJECT_DIR/builder/scripts/build-${PACKAGE}.sh"
+
+  if [ ! -f "$SCRIPT" ]; then
+    echo "Unknown package or missing build script: $PACKAGE"
+    echo "Expected: builder/scripts/build-${PACKAGE}.sh"
+    exit 1
+  fi
+
+  if [ ! -x "$SCRIPT" ]; then
+    echo "Build script is not executable: $SCRIPT"
+    echo "Fix with:"
+    echo "  chmod +x $SCRIPT"
+    exit 1
+  fi
+
+  run_builder "/scripts/build-${PACKAGE}.sh"
+}
+
+publish_package() {
+  PACKAGE="$1"
+  run_builder "/scripts/publish.sh ${PACKAGE}"
+}
+
+list_packages() {
+  echo "Available packages:"
+  find "$PROJECT_DIR/builder/scripts" \
+    -maxdepth 1 \
+    -type f \
+    -name "build-*.sh" \
+    -printf "  %f\n" \
+    | sed 's/^  build-/  /; s/\.sh$//' \
+    | sort
+}
+
+if [ $# -eq 0 ]; then
+  usage
+  exit 1
+fi
+
+case "$1" in
+  build)
+    [ -n "$2" ] || { usage; exit 1; }
+    build_package "$2"
+    ;;
+
+  publish)
+    [ -n "$2" ] || { usage; exit 1; }
+    publish_package "$2"
+    ;;
+
+  list)
+    list_packages
+    ;;
+
+  *)
+    PACKAGE="$1"
+    build_package "$PACKAGE"
+    publish_package "$PACKAGE"
+    ;;
+esac

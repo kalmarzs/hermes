@@ -1,0 +1,5 @@
+Codename: bookworm
+Suite: stable
+Components: main
+Architectures: armhf arm64
+SignWith: yes
