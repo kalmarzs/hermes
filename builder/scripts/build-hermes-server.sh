@@ -27,79 +27,6 @@ mkdir -p "$PKG_DIR/data/hermes/gnupg"
 # Install hermes CLI
 cat > "$PKG_DIR/usr/sbin/hermes" <<'EOF'
 #!/bin/bash
-set -e
-
-CONFIG_FILE="/etc/hermes.conf"
-
-if [ -f "$CONFIG_FILE" ]; then
-  . "$CONFIG_FILE"
-fi
-
-PROJECT_DIR="${HERMES_HOME:-/data/hermes}"
-IMAGE="${HERMES_BUILDER_IMAGE:-hermes-builder}"
-
-run_builder() {
-  docker run --rm \
-    -v "$PROJECT_DIR/packages:/packages" \
-    -v "$PROJECT_DIR/repo-data:/repo" \
-    -v "$PROJECT_DIR/gnupg:/gnupg" \
-    -v "$PROJECT_DIR/builder/scripts:/scripts" \
-    -v "$PROJECT_DIR:/hermes-source" \
-    "$IMAGE" \
-    bash -c "$1"
-}
-
-usage() {
-  echo "Usage:"
-  echo "  hermes <package>              # build + publish"
-  echo "  hermes build <package>"
-  echo "  hermes list"
-  echo "  hermes publish <package>"
-  echo "  hermes purge <package>"
-  echo "  hermes rebuild-images"
-  echo "  hermes remove <package>"
-}
-
-build_package() {
-  PACKAGE="$1"
-  SCRIPT="$PROJECT_DIR/builder/scripts/build-${PACKAGE}.sh"
-
-  if [ ! -f "$SCRIPT" ]; then
-    echo "Missing build script: $SCRIPT"
-    exit 1
-  fi
-
-  if [ ! -x "$SCRIPT" ]; then
-    echo "Build script is not executable: $SCRIPT"
-    echo "Fix with: chmod +x $SCRIPT"
-    exit 1
-  fi
-
-  run_builder "/scripts/build-${PACKAGE}.sh"
-}
-
-publish_package() {
-  PACKAGE="$1"
-  run_builder "/scripts/publish.sh ${PACKAGE}"
-}
-
-list_packages() {
-  echo "Available packages:"
-  find "$PROJECT_DIR/builder/scripts" \
-    -maxdepth 1 \
-    -type f \
-    -name "build-*.sh" \
-    -printf "  %f\n" \
-    | sed 's/^  build-/  /; s/\.sh$//' \
-    | sort
-}
-
-rebuild_images() {
-  cd "$PROJECT_DIR"
-  docker build -t "$IMAGE" ./builder
-  docker compose up -d --build
-}
-
 remove_package() {
   PACKAGE="$1"
 
@@ -113,16 +40,7 @@ remove_package() {
 purge_package() {
   PACKAGE="$1"
 
-  echo "🧹 Removing ${PACKAGE} from repository..."
-
-  docker run --rm \
-    -v "$PROJECT_DIR/repo-data:/repo" \
-    -v "$PROJECT_DIR/gnupg:/gnupg" \
-    "$IMAGE" \
-    bash -c "export GNUPGHOME=/gnupg && reprepro -b /repo remove bookworm '$PACKAGE'" \
-    || true
-
-  echo "🗑 Removing local package files..."
+  remove_package "$PACKAGE" || true
 
   find "$PROJECT_DIR/packages" \
     -maxdepth 1 \
@@ -130,48 +48,45 @@ purge_package() {
     -name "${PACKAGE}_*.deb" \
     -print \
     -delete
+}
 
-  echo "✅ Purge complete."
+list_packages() {
+  find "$PACKAGE_DIR" \
+    -type f \
+    -name 'build-*.sh' \
+    | sed 's|.*/build-||; s|\.sh$||' \
+    | sort
 }
 
 case "${1:-}" in
+
   build)
-    [ -n "${2:-}" ] || { usage; exit 1; }
     build_package "$2"
     ;;
 
   publish)
-    [ -n "${2:-}" ] || { usage; exit 1; }
     publish_package "$2"
+    ;;
+
+  remove|delete|revoke)
+    remove_package "$2"
+    ;;
+
+  purge)
+    purge_package "$2"
     ;;
 
   list)
     list_packages
     ;;
 
-  rebuild-images)
-    rebuild_images
-    ;;
-  
-  remove|delete|revoke)
-    [ -n "${2:-}" ] || { usage; exit 1; }
-    remove_package "$2"
-  ;;
-
-  purge)
-    [ -n "${2:-}" ] || { usage; exit 1; }
-    purge_package "$2"
-  ;;
-
-  "")
+  '')
     usage
-    exit 1
     ;;
 
   *)
-    PACKAGE="$1"
-    build_package "$PACKAGE"
-    publish_package "$PACKAGE"
+    build_package "$1"
+    publish_package "$1"
     ;;
 esac
 EOF

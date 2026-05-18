@@ -1,19 +1,22 @@
 #!/bin/bash
 set -e
 
+source /scripts/lib/messages.sh
+
 export GNUPGHOME=/gnupg
 
 FILTER="${1:-}"
 
-echo "📦 Available packages:"
+msg available_pkgs
 ls -l /packages
 
 FOUND=0
 
+REMOVED_PACKAGES=""
+
 for pkg in /packages/*.deb; do
-  if [ ! -f "$pkg" ]; then
-    continue
-  fi
+
+  [ -f "$pkg" ] || continue
 
   if [ -n "$FILTER" ]; then
     case "$pkg" in
@@ -26,20 +29,25 @@ for pkg in /packages/*.deb; do
 
   PKG_NAME="$(dpkg-deb -f "$pkg" Package)"
 
-  echo "🧹 Removing existing ${PKG_NAME} from repo if present..."
-  reprepro -b /repo remove bookworm "$PKG_NAME" || true
+  case " $REMOVED_PACKAGES " in
+    *" $PKG_NAME "*)
+      ;;
 
-  echo "📤 Publishing $pkg"
+    *)
+      echo "🧹 Removing existing package: $PKG_NAME"
+      reprepro -b /repo remove bookworm "$PKG_NAME" || true
+      REMOVED_PACKAGES="$REMOVED_PACKAGES $PKG_NAME"
+      ;;
+  esac
+
+  msg publish_start "$pkg"
   reprepro -b /repo includedeb bookworm "$pkg"
+
 done
 
 if [ "$FOUND" -eq 0 ]; then
-  if [ -n "$FILTER" ]; then
-    echo "❌ No .deb packages found matching: $FILTER"
-  else
-    echo "❌ No .deb packages found in /packages"
-  fi
+  msg no_package "$FILTER"
   exit 1
 fi
 
-echo "✅ Publish complete"
+msg publish_done
