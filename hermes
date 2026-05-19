@@ -1,87 +1,214 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env python3
 
-IMAGE="hermes-builder"
-PROJECT_DIR="/data/hermes"
+import os
+import sys
+import subprocess
+from pathlib import Path
 
-run_builder() {
-  docker run --rm \
-    -v "$PROJECT_DIR/packages:/packages" \
-    -v "$PROJECT_DIR/repo-data:/repo" \
-    -v "$PROJECT_DIR/gnupg:/gnupg" \
-    -v "$PROJECT_DIR/builder/scripts:/scripts" \
-    -v "$PROJECT_DIR:/hermes-source" \
-    "$IMAGE" \
-    bash -c "$1"
-}
 
-usage() {
-  echo "Usage:"
-  echo "  hermes build <package>"
-  echo "  hermes publish <package>"
-  echo "  hermes <package>              # build + publish"
-  echo "  hermes list"
-}
+CONFIG_FILE = Path("/etc/hermes.conf")
 
-build_package() {
-  PACKAGE="$1"
-  SCRIPT="$PROJECT_DIR/builder/scripts/build-${PACKAGE}.sh"
 
-  if [ ! -f "$SCRIPT" ]; then
-    echo "Unknown package or missing build script: $PACKAGE"
-    echo "Expected: builder/scripts/build-${PACKAGE}.sh"
-    exit 1
-  fi
+def load_config() -> dict:
+    config = {}
 
-  if [ ! -x "$SCRIPT" ]; then
-    echo "Build script is not executable: $SCRIPT"
-    echo "Fix with:"
-    echo "  chmod +x $SCRIPT"
-    exit 1
-  fi
+    if CONFIG_FILE.exists():
+        for line in CONFIG_FILE.read_text().splitlines():
+            line = line.strip()
 
-  run_builder "/scripts/build-${PACKAGE}.sh"
-}
+            if not line or line.startswith("#"):
+                continue
 
-publish_package() {
-  PACKAGE="$1"
-  run_builder "/scripts/publish.sh ${PACKAGE}"
-}
+            if "=" not in line:
+                continue
 
-list_packages() {
-  echo "Available packages:"
-  find "$PROJECT_DIR/builder/scripts" \
-    -maxdepth 1 \
-    -type f \
-    -name "build-*.sh" \
-    -printf "  %f\n" \
-    | sed 's/^  build-/  /; s/\.sh$//' \
-    | sort
-}
+            key, value = line.split("=", 1)
+            config[key.strip()] = value.strip().strip('"').strip("'")
 
-if [ $# -eq 0 ]; then
-  usage
-  exit 1
-fi
+    return config
 
-case "$1" in
-  build)
-    [ -n "$2" ] || { usage; exit 1; }
-    build_package "$2"
-    ;;
 
-  publish)
-    [ -n "$2" ] || { usage; exit 1; }
-    publish_package "$2"
-    ;;
+CONFIG = load_config()
 
-  list)
-    list_packages
-    ;;
+PROJECT_DIR = Path(CONFIG.get("HERMES_HOME", "/opt/hermes"))
+IMAGE = CONFIG.get("HERMES_BUILDER_IMAGE", "hermes-builder")
+COLLECTIONS = Path(
+    CONFIG.get(
+        "HERMES_COLLECTIONS",
+        str(PROJECT_DIR / "package-collections"),
+    )
+)
 
-  *)
-    PACKAGE="$1"
-    build_package "$PACKAGE"
-    publish_package "$PACKAGE"
-    ;;
-esac
+
+def run(command: list[str]) -> None:
+    subprocess.run(command, check=True)
+
+
+def run_builder(command: str) -> None:
+    docker_cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-e",
+        f"LANG={os.environ.get('LANG', 'en_US.UTF-8')}",
+        "-v",
+        f"{PROJECT_DIR / 'packages'}:/packages",
+        "-v",
+        f"{PROJECT_DIR / 'repo-data'}:/repo",
+        "-v",
+        f"{PROJECT_DIR / 'gnupg'}:/gnupg",
+        "-v",
+        f"{PROJECT_DIR / 'builder/scripts'}:/scripts",
+        "-v",
+        f"{COLLECTIONS}:/collections",
+        "-v",
+        f"{PROJECT_DIR}:/hermes-source",
+        IMAGE,
+        "bash",
+        "-c",
+        command,
+    ]
+
+    run(docker_cmd)
+
+
+def usage() -> None:
+    print("Usage:")
+    print("  hermes build <package>")
+    print("  hermes publish <package>")
+    print("  hermes remove <package>")
+    print("  hermes purge <package>")
+    print("  hermes list")
+    print("  hermes <package>              # build + publish")
+
+
+def find_build_script(package: str) -> Path | None:
+    pattern = f"build-{package}.sh"
+
+    if not COLLECTIONS.exists():
+        return None
+
+    matches = sorted(COLLECTIONS.rglob(pattern))
+
+    if not matches:
+        return None
+
+    return matches[0]
+
+
+def build_package(package: str) -> None:
+    script = find_build_script(package)
+
+    if script is None:
+        print(f"Missing build script for package: {package}", file=sys.stderr)
+        print(f"Searched in: {COLLECTIONS}", file=sys.stderr)
+        sys.exit(1)
+
+    if not os.access(script, os.X_OK):
+        print(f"Build script is not executable: {script}", file=sys.stderr)
+        print(f"Fix with: chmod +x {script}", file=sys.stderr)
+        sys.exit(1)
+
+    collection = script.parent.name
+
+    run_builder(f"bash /collections/{collection}/build-{package}.sh")
+
+
+def publish_package(package: str) -> None:
+    run_builder(f"/scripts/publish.sh {package}")
+
+
+def remove_package(package: str) -> None:
+    docker_cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        f"{PROJECT_DIR / 'repo-data'}:/repo",
+        "-v",
+        f"{PROJECT_DIR / 'gnupg'}:/gnupg",
+        IMAGE,
+        "bash",
+        "-c",
+        f"export GNUPGHOME=/gnupg && reprepro -b /repo remove bookworm '{package}'",
+    ]
+
+    run(docker_cmd)
+
+
+def purge_package(package: str) -> None:
+    try:
+        remove_package(package)
+    except subprocess.CalledProcessError:
+        pass
+
+    packages_dir = PROJECT_DIR / "packages"
+
+    for deb in packages_dir.glob(f"{package}_*.deb"):
+        print(deb)
+        deb.unlink()
+
+
+def list_packages() -> None:
+    if not COLLECTIONS.exists():
+        return
+
+    packages = []
+
+    for script in COLLECTIONS.rglob("build-*.sh"):
+        name = script.name.removeprefix("build-").removesuffix(".sh")
+        packages.append(name)
+
+    for package in sorted(set(packages)):
+        print(package)
+
+
+def main() -> None:
+    args = sys.argv[1:]
+
+    if not args:
+        usage()
+        sys.exit(1)
+
+    command = args[0]
+
+    try:
+        if command == "build":
+            if len(args) < 2:
+                usage()
+                sys.exit(1)
+            build_package(args[1])
+
+        elif command == "publish":
+            if len(args) < 2:
+                usage()
+                sys.exit(1)
+            publish_package(args[1])
+
+        elif command in {"remove", "delete", "revoke"}:
+            if len(args) < 2:
+                usage()
+                sys.exit(1)
+            remove_package(args[1])
+
+        elif command == "purge":
+            if len(args) < 2:
+                usage()
+                sys.exit(1)
+            purge_package(args[1])
+
+        elif command == "list":
+            list_packages()
+
+        else:
+            package = command
+            build_package(package)
+            publish_package(package)
+
+    except subprocess.CalledProcessError as exc:
+        print(f"Command failed with exit code {exc.returncode}", file=sys.stderr)
+        sys.exit(exc.returncode)
+
+
+if __name__ == "__main__":
+    main()
